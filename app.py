@@ -12,8 +12,17 @@ import random
 import subprocess
 import threading
 import tempfile
+import shutil
 import streamlit as st
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
+
+# 自动备份当前代码（首次运行时生成 app_backup_final.py）
+backup_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_backup_final.py")
+if not os.path.exists(backup_path):
+    try:
+        shutil.copyfile(__file__, backup_path)
+    except Exception:
+        pass
 
 # ============== 1. 系统配置与 GitHub 同步 ==============
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -323,7 +332,7 @@ with tab2:
             
         combos = [f"[入局]{random.choice(db['Entry_Gameplay'])} | [循环]{random.choice(db['Core_Loop'])} | [题材]{random.choice(db['Theme'])} | [画风]{random.choice(db['Art_Style'])}" for _ in range(15)]
         rules_text = "\n".join([f"{i+1}. {r}" for i, r in enumerate(db.get("Market_Rules", []))])
-        prompt = f"""【🔴 团队风控法则库】：\n{rules_text}\n\n请评估以下组合：\n{chr(10).join(combos)}\n淘汰12个废案，选出最具爆发力的3个。返回纯JSON数组：[ {{"id":"1", "idea_name":"代号", "combo":"组合", "evaluation":"优劣势分析"}} ]"""
+        prompt = f"""【🔴 团队真实复盘记忆库 (正负双向标尺)】：\n{rules_text}\n\n请评估以下 15 个随机立项组合：\n{chr(10).join(combos)}\n\n【强制双向动态打分规则】：\n1. 👎 负向惩罚（防暴死）：提取新方案商业逻辑，比对复盘库中的'👎死穴'。命中 1 次提示，2 次大幅下调权重，3 次及以上直接淘汰。\n2. 👍 正向奖励（抓红利）：比对复盘库中的'👍优势'。若新方案复刻或巧妙化用了历史成功机制，必须给予极高的创新与留存加分，优先入选！\n\n淘汰掉 12 个废案，选出最具爆发力且最能踩中成功杠杆的 3 个。返回纯 JSON 数组格式：[ {{"id":"1", "idea_name":"代号", "combo":"组合", "evaluation":"150字内双向分析：说明踩中了哪些历史优势加分，或踩中了哪些死穴扣分"}} ]"""
 
         with st.spinner(f"🤖 正在使用 {selected_model} 进行风控打分..."):
             try:
@@ -343,7 +352,7 @@ with tab2:
                 if st.button(f"📝 深度推演：生成【{obj.get('idea_name')}】详案", key=f"btn_{idx}"):
                     model = get_model()
                     rules_text = "\n".join(load_database().get("Market_Rules", []))
-                    detail_prompt = f"【法则】：\n{rules_text}\n\n基于此，为组合 [{obj.get('combo')}] 撰写详尽 Markdown 立项案。包含：高概念、玩法过渡拆解、买量分析、LTV设计。"
+                    detail_prompt = f"""【🔴 团队真实复盘记忆库 (正负双向标尺)】：\n{rules_text}\n\n基于以上记忆库和【双向动态奖惩机制】，为组合 [{obj.get('combo')}] 撰写详尽 Markdown 立项案。必须严格按照以下结构输出：\n\n### 💡 一句话高概念\n### 📊 综合商业成功率预判：[XX]/100分\n\n#### 1. 获客与留存风险评估 (权重 40%)：[XX]/40分\n* **评估依据：** 评判题材吸量与前期留存表现。\n* **👍 历史优势复刻 (正向加分)：** 明确列出该方案成功化用了记忆库中哪几个项目的【👍优势】（必须写出具体复盘项目名作为证据）。这些优势如何帮助本方案降低获客成本或提升留存？触发了多少额外加分？若无则写"未踩中已知历史优势"。\n\n#### 2. 长线变现健康度评估 (权重 60%)：[XX]/60分\n* **评估依据：** 评判其商业化落地能力（短平快还是长线LTV）。\n* **👎 历史雷区碰撞 (负向惩罚)：** 明确列出该方案踩中了记忆库中哪几个项目的【👎死穴】（写出具体项目名）。触发了何种扣分惩罚（1次黄牌，2次橙警扣10-15分，3次红警扣30分以上）？若无则写"完美避开已知历史雷区"。\n\n#### 🚀 核心破局建议：\n基于记忆库的【🧠法则】，给出扬长避短的具体落地执行方向。"""
                     with st.spinner(f"正在使用 [{selected_model}] 撰写详案..."):
                         try: st.session_state.idea_details[idx] = model.generate_content(detail_prompt).text
                         except Exception: pass
@@ -436,16 +445,18 @@ with tab4:
     st.header("🧠 真实市场复盘与永久记忆权重")
     r_name = st.text_input("竞品名称")
     r_desc = st.text_area("玩法与题材概述")
+    r_theme = st.text_input("题材 (选填，留空则由AI从视觉素材推演)")
+    r_art = st.text_input("画风 (选填，留空则由AI从视觉素材推演)")
     r_result = st.text_area("真实市场成绩反馈")
     uploaded_file = st.file_uploader("📂 上传实机参考", type=['png', 'jpg', 'jpeg', 'mp4'])
-    
+
     if st.button("📥 深度复盘，提取通用法则入库", type="primary"):
         if not r_name or not r_result: st.error("必填！"); st.stop()
         model = get_model()
         if not model: st.stop()
         import google.generativeai as genai
         contents, temp_path, cloud_file = [], None, None
-        
+
         if uploaded_file:
             ext = os.path.splitext(uploaded_file.name)[1]
             with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
@@ -456,32 +467,36 @@ with tab4:
                 while cloud_file.state.name == "PROCESSING":
                     with st.spinner("⏳ 正在分析视频..."): time.sleep(3); cloud_file = genai.get_file(cloud_file.name)
             contents.append(cloud_file)
-            
-        prompt = f"分析此案例：游戏：{r_name}\n概述：{r_desc}\n成绩：{r_result}\n提炼 1 条极精炼的可复用【风控法则】。返回 JSON: {{ \"rule\": \"法则文本\" }}"
+
+        prompt = f"你是一个资深游戏业务分析师。请复盘此案例：\n项目名称：{r_name}\n玩法概述：{r_desc}\n已知题材：{r_theme} | 已知画风：{r_art}\n市场反馈：{r_result}\n（若已知题材/画风为空且附带了视觉文件，请务必利用视觉能力专业解析补齐！）\n\n请深度剖析并返回一个合法的 JSON 对象（绝对不要包含 markdown 标记），必须包含以下 4 个键：\n- `positioning`: (字符串)项目定位(玩法框架+题材+画风)\n- `advantages`: (字符串)核心优势(创新点、如何降低流失等正向破局点)\n- `fatal_flaws`: (字符串)关键问题(制约长线的负向商业模式死穴)\n- `rule`: (字符串)提炼指导未来立项的通用法则"
         contents.append(prompt)
-        
+
         with st.spinner(f"🧠 使用 [{selected_model}] 提炼法则..."):
             try:
                 resp = model.generate_content(contents, generation_config=GEN_JSON, safety_settings=SAFETY_SETTINGS)
                 raw = re.sub(r"^```(?:json)?\s*", "", resp.text.strip())
-                new_rule = json.loads(re.sub(r"\s*```\s*$", "", raw).strip()).get("rule", "")
-            except Exception: new_rule = ""
-                
-        if cloud_file: 
+                raw = re.sub(r"\s*```\s*$", "", raw).strip()
+                m = re.search(r"\{[\s\S]*\}", raw)
+                raw = m.group(0) if m else raw
+                data = json.loads(raw)
+            except Exception: data = {}
+
+        if cloud_file:
             try: genai.delete_file(cloud_file.name)
             except: pass
-        if temp_path: 
+        if temp_path:
             try: os.remove(temp_path)
             except: pass
-        
-        if new_rule:
+
+        new_rule_text = f"📍定位:{data.get('positioning','')} | 👍优势:{data.get('advantages','')} | 👎死穴:{data.get('fatal_flaws','')} | 🧠法则:{data.get('rule','')}"
+        new_entry = f"【复盘:{r_name}】 {new_rule_text}"
+        if data.get("positioning") or data.get("advantages") or data.get("fatal_flaws") or data.get("rule"):
             db = load_database()
-            new_entry = f"【复盘:{r_name}】 {new_rule}"
             if new_entry not in db["Market_Rules"]:
                 db["Market_Rules"].append(new_entry)
                 save_database(db)
-                st.success("✅ 新法则已入库！")
-                st.info(f"💡 {new_entry}")
+            st.success("✅ 新法则已入库！")
+            st.info(f"💡 {new_entry}")
     
     st.divider()
     db = load_database()
