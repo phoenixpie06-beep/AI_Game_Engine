@@ -228,8 +228,43 @@ with tab1:
                 obj_match = re.search(r"\{[\s\S]*\}", text)
                 data = json.loads(obj_match.group(0) if obj_match else text)
             except Exception as e:
-                st.error(f"❌ JSON 解析失败: {e}"); st.stop()
-                
+                st.warning(f"⚠️ 捕获到格式损坏 ({e})，启动【智能提纯模式】(约需5-10秒)...")
+                model = get_model()
+                if not model: st.stop()
+
+                repair_prompt = f"你是一个顶尖的数据清洗AI。用户粘贴了一段损坏的文本（可能缺失逗号、带有非法索引等）。\n请直接跳过语法修复，从这段文本中提取出所有具有商业价值的游戏机制/题材/画风。\n必须返回一个合法的 JSON 对象，包含以下四个键（若无内容则为空数组 []）：\n- Entry_Gameplay (入局玩法)\n- Core_Loop (核心循环)\n- Theme (题材)\n- Art_Style (画风)\n提取的内容尽量保留「【名称】 描述 (玩家诉求: xxx)」的格式。绝对不要带有 markdown 标记。\n\n损坏文本：\n{text}"
+
+                with st.spinner("🤖 AI 正在无视语法错误，直接强行抽取商业基因..."):
+                    try:
+                        resp = model.generate_content(repair_prompt, safety_settings=SAFETY_SETTINGS)
+                        fixed_raw = re.sub(r"^```(?:json)?\s*", "", resp.text.strip())
+                        fixed_raw = re.sub(r"\s*```\s*$", "", fixed_raw).strip()
+
+                        obj_match = re.search(r"\{[\s\S]*\}", fixed_raw)
+                        data = json.loads(obj_match.group(0) if obj_match else fixed_raw)
+
+                        new_items = {
+                            "Entry_Gameplay": data.get("Entry_Gameplay", []),
+                            "Core_Loop": data.get("Core_Loop", []),
+                            "Theme": data.get("Theme", []),
+                            "Art_Style": data.get("Art_Style", [])
+                        }
+
+                        db = load_database()
+                        db = merge_and_dedupe(db, new_items)
+                        save_database(db)
+
+                        total = sum(len(v) for v in new_items.values())
+                        if total > 0:
+                            st.success(f"✅ AI 强行提纯成功！榨取 {total} 个基因并入库！（☁️ 已同步）")
+                            st.json(new_items)
+                        else:
+                            st.warning("⚠️ AI 未能在损坏文本中找到有效基因。")
+                        st.stop()
+                    except Exception as ex2:
+                        st.error(f"❌ AI 强行提取失败，文本损坏过于严重: {ex2}")
+                        st.stop()
+
             new_items = extract_genes_from_json(data)
             db = load_database()
             db = merge_and_dedupe(db, new_items)
@@ -361,6 +396,41 @@ with tab3:
         save_database(db)
         st.success("✅ 已保存！（☁️ 已同步）")
         time.sleep(1); st.rerun()
+
+    st.divider()
+    if st.button("🧠 召唤 AI 进行全库深度语义合并与瘦身", type="primary"):
+        model = get_model()
+        if not model: st.stop()
+        db = load_database()
+        prompt = f"""你是有重度数据洁癖的资深游戏主策。这是我的立项基因库：
+{json.dumps(db, ensure_ascii=False)}
+
+请对四个维度进行【合并同类项与语义瘦身】。将本质相同、表述冗余的机制融合成一个最精准的表述（务必保留原有的【模块名】和'(玩家诉求: xxx)'格式）。必须且只能返回清洗后的纯 JSON 对象，键名保持 Entry_Gameplay, Core_Loop, Theme, Art_Style 不变。绝对不要带有 markdown 标记。"""
+
+        with st.spinner(f"🧠 正在调用 [{selected_model}] 进行全库语义扫描与融合..."):
+            try:
+                resp = model.generate_content(prompt, generation_config=GEN_JSON, safety_settings=SAFETY_SETTINGS)
+                raw_text = resp.text if hasattr(resp, "text") else str(resp)
+            except Exception as ex:
+                st.error(f"❌ 调用失败: {ex}")
+                st.stop()
+
+        text = re.sub(r"^```(?:json)?\s*", "", raw_text.strip())
+        text = re.sub(r"\s*```\s*$", "", text).strip()
+        m = re.search(r"\{[\s\S]*\}", text)
+        if m: text = m.group(0)
+        try:
+            washed = json.loads(text)
+        except json.JSONDecodeError as ex:
+            st.error(f"❌ 解析失败: {ex}")
+            st.stop()
+
+        # 把 Market_Rules 塞回洗好的 JSON，防止丢失
+        washed["Market_Rules"] = db.get("Market_Rules", [])
+        save_database(washed)
+        st.success("✨ 深度语义查重与洗库完成！（☁️ 已同步）")
+        time.sleep(1)
+        st.rerun()
 
 with tab4:
     st.header("🧠 真实市场复盘与永久记忆权重")
